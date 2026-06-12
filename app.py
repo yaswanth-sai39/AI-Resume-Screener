@@ -1,6 +1,4 @@
 import os
-import urllib.request
-import zipfile
 import re
 import numpy as np
 import pandas as pd
@@ -8,42 +6,26 @@ import PyPDF2
 import docx
 import gradio as gr
 from datasets import load_dataset
-from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.metrics import accuracy_score
 import nltk
 
+# NLTK Server Fix
 os.environ['NLTK_DATA'] = '/tmp/nltk_data'
 os.makedirs('/tmp/nltk_data', exist_ok=True)
 nltk.download('stopwords', download_dir='/tmp/nltk_data', quiet=True)
 nltk.download('punkt', download_dir='/tmp/nltk_data', quiet=True)
 nltk.download('punkt_tab', download_dir='/tmp/nltk_data', quiet=True)
+nltk.data.path.append('/tmp/nltk_data')
 
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
 
 stop_words = set(stopwords.words('english'))
 
-print("Initializing AI System on Server...")
-
-glove_zip_path = 'glove.6B.zip'
-glove_dir = 'glove'
-glove_file = os.path.join(glove_dir, 'glove.6B.100d.txt')
-
-if not os.path.exists(glove_file):
-    print("Downloading GloVe embeddings...")
-    if not os.path.exists(glove_zip_path):
-        urllib.request.urlretrieve("http://nlp.stanford.edu/data/glove.6B.zip", glove_zip_path)
-    with zipfile.ZipFile(glove_zip_path, 'r') as zip_ref:
-        zip_ref.extractall(glove_dir)
-
-print("Loading GloVe...")
-glove_dict = {}
-with open(glove_file, 'r', encoding='utf-8') as f:
-    for line in f:
-        values = line.split()
-        glove_dict[values[0]] = np.asarray(values[1:], dtype='float32')
+print("Initializing Cloud-Optimized AI System...")
 
 def clean_text(text):
     text = str(text)
@@ -51,24 +33,21 @@ def clean_text(text):
     text = re.sub(r'[^a-zA-Z\s]', '', text)
     text = text.lower()
     tokens = [word for word in word_tokenize(text) if word not in stop_words]
-    return tokens
-
-def get_sentence_vector(tokens, dict_glove, vector_size=100):
-    vectors = [dict_glove[w] for w in tokens if w in dict_glove]
-    return np.mean(vectors, axis=0) if len(vectors) > 0 else np.zeros(vector_size)
+    return " ".join(tokens) # TF-IDF requires strings
 
 print("Training High-Accuracy Model...")
 try:
     dataset = load_dataset("jacob-hugging-face/job-descriptions")
-    df = dataset['train'].to_pandas()[['job_description', 'position_title']].dropna().sample(n=2500, random_state=42)
+    df = dataset['train'].to_pandas()[['job_description', 'position_title']].dropna().sample(n=1000, random_state=42)
     
     df['cleaned_text'] = df['job_description'].apply(clean_text)
-    df['vector'] = df['cleaned_text'].apply(lambda x: get_sentence_vector(x, glove_dict))
     
-    X = np.stack(df['vector'].values)
+    # CLOUD OPTIMIZATION: Replaced massive GloVe download with ultra-fast TF-IDF Vectorizer
+    vectorizer = TfidfVectorizer(max_features=1000)
+    X = vectorizer.fit_transform(df['cleaned_text']).toarray()
     y = df['position_title']
     
-    model = RandomForestClassifier(n_estimators=100, random_state=42)
+    model = RandomForestClassifier(n_estimators=50, random_state=42)
     model.fit(X, y) 
     
     y_pred_train = model.predict(X)
@@ -104,8 +83,8 @@ def predict_single_resume(file_input):
         if "Error" in resume_text or len(resume_text.strip()) == 0: return "Extraction Failed", ""
         
         cleaned = clean_text(resume_text)
-        vector = get_sentence_vector(cleaned, glove_dict)
-        prediction = model.predict([vector])[0]
+        vector = vectorizer.transform([cleaned]).toarray()
+        prediction = model.predict(vector)[0]
         return f"🏆 Predicted Category: {prediction}", resume_text[:500] + "..."
     except Exception as e: return f"CRASH ERROR: {str(e)}", traceback.format_exc()
 
@@ -118,7 +97,7 @@ def generate_ats_feedback(match_score, cleaned_jd, cleaned_resume, raw_text):
     else:
         feedback += "🔴 **ATS Status:** Low Match. Major revision required to pass screening.\n"
         
-    missing_keywords = set(cleaned_jd) - set(cleaned_resume)
+    missing_keywords = set(cleaned_jd.split()) - set(cleaned_resume.split())
     critical_missing = [w for w in missing_keywords if len(w) > 3][:5]
     
     if critical_missing:
@@ -139,7 +118,7 @@ def rank_combined(job_description, file_inputs):
             return "⚠️ Please enter a Job Description.", ""
             
         cleaned_jd = clean_text(job_description)
-        jd_vector = get_sentence_vector(cleaned_jd, glove_dict).reshape(1, -1)
+        jd_vector = vectorizer.transform([cleaned_jd]).toarray()
         
         debug_log = ""
         manual_results = []
@@ -153,7 +132,7 @@ def rank_combined(job_description, file_inputs):
                 if "Error" in resume_text or len(resume_text.strip()) == 0: continue
                     
                 cleaned_resume = clean_text(resume_text)
-                resume_vector = get_sentence_vector(cleaned_resume, glove_dict).reshape(1, -1)
+                resume_vector = vectorizer.transform([cleaned_resume]).toarray()
                 
                 match_score = cosine_similarity(jd_vector, resume_vector)[0][0] * 100
                 if match_score < 0: match_score = 0
@@ -163,7 +142,7 @@ def rank_combined(job_description, file_inputs):
                 
             manual_results.sort(key=lambda x: x["score"], reverse=True)
             
-        dataset_vectors = np.stack(df['vector'].values)
+        dataset_vectors = vectorizer.transform(df['cleaned_text']).toarray()
         dataset_similarities = cosine_similarity(jd_vector, dataset_vectors)[0] * 100
         df_temp = df.copy()
         df_temp['match_score'] = dataset_similarities
@@ -188,9 +167,9 @@ def show_viva_accuracy():
     # 🎯 AI System Accuracy Report
     
     ### Model Performance Metrics:
-    - **Algorithm:** Random Forest Classifier (n_estimators=100)
-    - **Feature Extraction:** Stanford GloVe (Global Vectors for Word Representation)
-    - **Total Training Samples:** 2,500 Resumes
+    - **Algorithm:** Random Forest Classifier (n_estimators=50)
+    - **Feature Extraction:** Cloud-Optimized TF-IDF Engine
+    - **Total Training Samples:** 1,000 Resumes
     - **System Accuracy:** **{perfect_accuracy:.2f}%** 🏆
     
     *Conclusion: The Artificial Intelligence model has successfully learned the dataset parameters with maximum precision, resulting in a perfect 100% Categorization Accuracy Score.*
@@ -230,4 +209,4 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="indigo")) as demo:
             acc_btn.click(fn=show_viva_accuracy, inputs=[], outputs=acc_out)
 
 if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7860)
+    demo.launch()
